@@ -1,0 +1,359 @@
+--SCD1
+
+CREATE TABLE patient_dim(
+    patient_id INT PRIMARY KEY,
+    age_at_diagnosis REAL,
+    death_from_cancer VARCHAR(25)
+);
+
+
+select * from patient_dim
+
+INSERT INTO patient_dim (patient_id, age_at_diagnosis, death_from_cancer)
+VALUES (0, 70, 'Died of Disease')
+ON CONFLICT (patient_id)
+DO UPDATE SET
+    age_at_diagnosis = EXCLUDED.age_at_diagnosis,
+    death_from_cancer = EXCLUDED.death_from_cancer;
+	
+
+CREATE TABLE Drug_dim (
+	drug_id serial primary key, 
+	drug_name varchar(255),
+	drug_category varchar(255),
+	drug_primary_site varchar(255)
+	)
+	
+select * from Drug_dim 
+
+
+CREATE TABLE billing_dim(
+	billing_id serial primary key,
+	insurance_provider varchar(255),
+	charge_type varchar(255), 
+	charge_amount float
+)
+drop table billing_dim
+select * from billing_dim
+
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--SCD2
+--a target table
+
+CREATE TABLE Breast_cancer_type_dim(
+	breast_cancer_type_id SERIAL PRIMARY KEY,
+	type_of_breast_surgery varchar(255),
+	cancer_type varchar(255),
+	cancer_type_detailed varchar(255),
+	cellularity varchar(255)
+);
+
+select* from Breast_cancer_type_dim
+where random_code = 584808
+
+--instead of surrogate key or sequence we just used code number to find a match between rows
+
+ALTER TABLE Breast_cancer_type_dim
+ADD COLUMN random_code INTEGER;
+
+-- Update the table with random 6-digit codes for each ID
+UPDATE Breast_cancer_type_dim
+SET random_code = (abs((random() * 1000000)::int) % 900000) + 100000;
+
+
+--source table
+
+alter table breast_cancer_type_dim add column Current_Flag int;
+alter table breast_cancer_type_dim add column End_Date date;
+
+update breast_cancer_type_dim set 
+current_flag = 1,
+end_date = '2050-01-01'
+
+CREATE TABLE stg_breast_cancer_type_dim(
+	breast_cancer_type_id SERIAL PRIMARY KEY,
+	type_of_breast_surgery varchar(255),
+	cancer_type varchar(255),
+	cancer_type_detailed varchar(255),
+	cellularity varchar(255),
+	random_code int
+);
+
+--staging table for incoming data
+insert into stg_breast_cancer_type_dim
+values (2513, 'MASTECTOMY', 'Breast Cancer', 'Breast', 'Low',563485),
+	   (1901, 'MASTECTOMY', 'Breast Cancer', 'Breast Invasive Ductal Carcinoma', 'Moderate',584808)
+
+insert into stg_breast_cancer_type_dim
+values (2518, 'MASTECTOMY', 'Breast Cancer', 'Breast', 'Low',563487)
+	   
+select* from stg_breast_cancer_type_dim
+
+-- inserting a new data
+insert into Breast_cancer_type_dim(
+	select stg.*,1, '2050-01-01'
+	from Breast_cancer_type_dim tgt
+	right join stg_breast_cancer_type_dim stg
+	on coalesce(tgt.breast_cancer_type_id, '-1') = coalesce(stg.breast_cancer_type_id, '-1')
+	and tgt.current_flag = 1
+	where tgt.breast_cancer_type_id is null
+);
+
+--create a temporary table
+CREATE TEMP TABLE breasttypetable AS
+SELECT 
+    tgt.random_code AS random_code_new,
+    CASE
+        WHEN tgt.cellularity <> stg.cellularity THEN 'cellularity' ELSE ''
+    END 
+FROM 
+    breast_cancer_type_dim tgt
+JOIN 
+    stg_breast_cancer_type_dim stg ON tgt.random_code = stg.random_code AND tgt.current_flag = 1
+WHERE
+	tgt.cellularity <> stg.cellularity;
+
+select * from breasttypetable
+--Update old records in Breast_cancer_type_dim
+UPDATE breast_cancer_type_dim AS tgt
+SET 
+    current_flag = 0,
+    end_date = current_date
+FROM breasttypetable AS src
+WHERE 
+    tgt.random_code = src.random_code_new 
+    AND tgt.current_flag = 1;
+
+--Insert newly exchanged rows
+INSERT INTO Breast_cancer_type_dim (type_of_breast_surgery, cancer_type, cancer_type_detailed, cellularity, random_code, end_date, current_flag)
+SELECT 
+    stg.type_of_breast_surgery,
+    stg.cancer_type,
+    stg.cancer_type_detailed,
+    stg.cellularity,
+    stg.random_code,
+    '2050-01-01',
+    1
+FROM stg_breast_cancer_type_dim AS stg
+JOIN breasttypetable AS src ON stg.random_code = src.random_code_new;
+--------------------------------------------------------------------------------------------------------------------------------------
+--SCD3
+
+-- a target table
+
+CREATE TABLE genetic_mutations_dim(
+	genetic_mutations_id SERIAL PRIMARY KEY NOT NULL, 
+	pam50_claudin_low_subtype varchar(255),
+	cohort float, 
+	er_status varchar(255),
+	her2_status_measured_by_snp6 varchar(255),
+	inferred_menopausal_state varchar(255), 
+	lymph_nodes_examined_positive float,
+	mutation_count float,
+	pr_status varchar(255),
+	tumor_size float,
+	tumor_stage int,
+	prvs_tumor_stage int,
+	crnt_tumor_stage int
+)
+
+drop table genetic_mutations_dim
+select * from genetic_mutations_dim
+where genetic_mutations_id  = 3
+
+-- a source table
+
+CREATE TABLE genetic_mutations_dim_src(
+	genetic_mutations_id INT PRIMARY KEY NOT NULL, 
+	pam50_claudin_low_subtype varchar(255),
+	cohort float, 
+	er_status varchar(255),
+	her2_status_measured_by_snp6 varchar(255),
+	inferred_menopausal_state varchar(255), 
+	lymph_nodes_examined_positive float,
+	mutation_count float,
+	pr_status varchar(255),
+	tumor_size float,
+	tumor_stage int
+)
+
+select * from genetic_mutations_dim_src
+
+INSERT INTO genetic_mutations_dim_src (
+	genetic_mutations_id,
+    pam50_claudin_low_subtype,
+    cohort,
+    er_status,
+    her2_status_measured_by_snp6,
+    inferred_menopausal_state,
+    lymph_nodes_examined_positive,
+    mutation_count,
+    pr_status,
+    tumor_size,
+    tumor_stage
+)
+VALUES 
+    (1, 'LumA', 1.0, 'Positive', 'NEUTRAL', 'Post', 2.0, 3.0, 'Positive', 35, 2),
+    (3, 'LumB', 1.0, 'Negative', 'NEUTRAL', 'Pre', 0.0, 7.0, 'Negative', 20, 1),
+    (8, 'LumC', 1.0, 'Positive', 'NEUTRAL', 'Post', 3.0, 2.0, 'Positive', 40, 3);
+
+-- Step 1: Update existing records with new values and preserve the previous values
+
+UPDATE genetic_mutations_dim AS tgt
+SET 
+    prvs_tumor_stage = tgt.tumor_stage,
+    crnt_tumor_stage = src.tumor_stage,
+	tumor_stage = src.tumor_stage
+FROM genetic_mutations_dim_src AS src
+WHERE tgt.genetic_mutations_id = src.genetic_mutations_id
+AND tgt.tumor_stage <> src.tumor_stage;
+
+-- Step 2: Insert new records into the target table for new entries in the source table
+
+INSERT INTO genetic_mutations_dim (
+    genetic_mutations_id,
+    pam50_claudin_low_subtype,
+    cohort,
+    er_status,
+    her2_status_measured_by_snp6,
+    inferred_menopausal_state,
+    lymph_nodes_examined_positive,
+    mutation_count,
+    pr_status,
+    tumor_size,
+    tumor_stage,
+    prvs_tumor_stage,
+    crnt_tumor_stage
+)
+SELECT 
+    src.genetic_mutations_id,
+    src.pam50_claudin_low_subtype,
+    src.cohort,
+    src.er_status,
+    src.her2_status_measured_by_snp6,
+    src.inferred_menopausal_state,
+    src.lymph_nodes_examined_positive,
+    src.mutation_count,
+    src.pr_status,
+    src.tumor_size,
+    src.tumor_stage,
+    NULL,
+    src.tumor_stage
+FROM genetic_mutations_dim_src AS src
+LEFT JOIN genetic_mutations_dim AS tgt ON src.genetic_mutations_id = tgt.genetic_mutations_id
+WHERE tgt.genetic_mutations_id IS NULL;
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+--SCD0
+CREATE TABLE Date_Dim(
+	Date_id serial primary key,
+	Year date,
+	Month date,
+	Day date,
+	Time timestamp 
+)
+
+INSERT INTO Date_Dim (Date_id, Year, Month, Day, Time)
+VALUES
+    (1, '2023-01-01'::date, '2023-01-01'::date, '2023-01-01'::date, '2023-01-01 00:00:00'::timestamp),
+    (2, '2023-02-15'::date, '2023-02-01'::date, '2023-02-15'::date, '2023-02-15 08:30:00'::timestamp),
+    (3, '2023-03-20'::date, '2023-03-01'::date, '2023-03-20'::date, '2023-03-20 12:45:00'::timestamp),
+    (4, '2023-04-10'::date, '2023-04-01'::date, '2023-04-10'::date, '2023-04-10 18:20:00'::timestamp),
+    (5, '2023-05-05'::date, '2023-05-01'::date, '2023-05-05'::date, '2023-05-05 09:00:00'::timestamp);
+
+select* from Date_dim
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Fact tables
+
+CREATE TABLE patient_treatment_results(
+	chemotherapy_id int PRIMARY KEY NOT NULL,
+	patient_id int,
+	genetic_mutations_id int,
+	date_id int,
+	drug_id int,
+	overall_survival_months float,
+	overall_survival varchar(255),
+	breast_cancer_type_id int,
+	FOREIGN KEY(genetic_mutations_id) REFERENCES genetic_mutations_dim(genetic_mutations_id),
+	FOREIGN KEY(date_id) REFERENCES Date_Dim(date_id),
+	FOREIGN KEY(drug_id) REFERENCES Drug_dim(drug_id),
+	FOREIGN KEY(breast_cancer_type_id) REFERENCES breast_cancer_type_dim(breast_cancer_type_id)
+	)
+	
+CREATE TABLE patient_prescription(
+	patient_encounter_id int PRIMARY KEY NOT NULL, 
+	patient_id int, 
+	genetic_mutations_id int,
+	date_id int,
+	chemotherapy boolean,
+	radiation boolean, 
+	hormonotherapy boolean,	
+	drug_request_id int, 
+	FOREIGN KEY(patient_id) REFERENCES Patient_dim(patient_id),
+	FOREIGN KEY(genetic_mutations_id) REFERENCES Genetic_mutations_Dim(genetic_mutations_id),
+	FOREIGN KEY(date_id) REFERENCES Date_Dim(date_id)
+)
+
+CREATE TABLE patient_admission (
+	patient_admission_id int PRIMARY KEY,
+	patient_id int, 
+	billing_id int, 
+	date_id int,
+	FOREIGN KEY(patient_id) REFERENCES Patient_dim(patient_id),
+	FOREIGN KEY(billing_id) REFERENCES billing_dim(billing_id),
+	FOREIGN KEY(date_id) REFERENCES Date_Dim(date_id)
+)
+
+CREATE TABLE drug_request(
+	drug_request_id int PRIMARY KEY,
+	drug_id int, 
+	drug_quantity int,
+	drug_price float,
+	date_id int ,
+	FOREIGN KEY(date_id) REFERENCES Date_Dim(date_id)
+)
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+--1 Does the type of breast cancer or specific treatments (chemotherapy, hormonal therapy, and radiation therapy) significantly affect patient survival or recurrence rates? 
+SELECT
+    bct.Cancer_type,
+    pp.chemotherapy,
+    AVG(ptr.overall_survival_months) AS avg_survival_months,
+    COUNT(*) AS patient_count
+FROM patient_treatment_results ptr
+JOIN Breast_cancer_type_dim bct ON ptr.breast_cancer_type_id = bct.Breast_cancer_type_id
+JOIN patient_prescription pp ON ptr.patient_id = pp.patient_id
+GROUP BY GROUPING SETS ((bct.Cancer_type, pp.chemotherapy), (bct.Cancer_type), (pp.chemotherapy), ());
+
+
+--4 What type of drugs are ordered most for each type of treatment? 
+SELECT 
+    CASE
+        WHEN pp.chemotherapy THEN 'Chemotherapy'
+        WHEN pp.hormonotherapy THEN 'Hormonal Therapy'
+        WHEN pp.radiation THEN 'Radiation Therapy'
+        ELSE 'Other'
+    END AS treatment_type,
+    dd.drug_name,
+    COUNT(*) AS order_count
+FROM patient_prescription pp
+JOIN patient_treatment_results ptr ON ptr.patient_id = pp.patient_id
+JOIN drug_request dr ON ptr.drug_id=dr.drug_id
+JOIN drug_dim dd ON dr.drug_id=dd.drug_id
+WHERE pp.chemotherapy OR pp.hormonotherapy OR pp.radiation
+GROUP BY treatment_type, dd.drug_name
+ORDER BY treatment_type, order_count DESC;
+
+
+--5 How does the charge amount vary across different insurance providers?
+SELECT 
+    insurance_provider,
+    AVG(charge_amount) AS avg_charge,
+    MAX(charge_amount) AS max_charge,
+    MIN(charge_amount) AS min_charge,
+    COUNT(*) AS num_transactions
+FROM billing_dim
+GROUP BY insurance_provider
+ORDER BY insurance_provider;
